@@ -96,37 +96,34 @@ def get_episode_map(env, mapper, M, config, device):
     global_wall_map = torch.zeros(1, 2, M, M).to(device)
     global_seen_map = torch.zeros(1, 2, M, M).to(device)
 
+    # Calculate map size and resolution computed by pathfinder
     grid_size = config.TASK.GT_EGO_MAP.MAP_SCALE
-    coordinate_max = maps.COORDINATE_MAX
-    coordinate_min = maps.COORDINATE_MIN
-    resolution = (coordinate_max - coordinate_min) / grid_size
-    grid_resolution = (int(resolution), int(resolution))
+    lower_bound, upper_bound = env.habitat_env.sim.pathfinder.get_bounds()
+    grid_resolution_z = int((upper_bound[2] - lower_bound[2]) / grid_size)
+    grid_resolution_x = int((upper_bound[0] - lower_bound[0]) / grid_size)
+    map_resolution = min(grid_resolution_x, grid_resolution_z)
+    ## in pathfinder coordinates, downward is +Z and rightward is +X
+    grid_resolution = (grid_resolution_z, grid_resolution_x)
 
-    top_down_map = maps.get_topdown_map(
-        env.habitat_env.sim, grid_resolution, 20000, draw_border=False,
+    top_down_map = maps.get_topdown_map_from_sim(
+        env.habitat_env.sim, map_resolution, draw_border=False,
     )
-
     map_w, map_h = top_down_map.shape
 
     intervals = (max(int(0.5 / grid_size), 1), max(int(0.5 / grid_size), 1))
-    x_vals = np.arange(0, map_w, intervals[0], dtype=int)
-    y_vals = np.arange(0, map_h, intervals[1], dtype=int)
-    coors = np.stack(np.meshgrid(x_vals, y_vals), axis=2)  # (H, W, 2)
+    x_vals = np.arange(0, map_w, intervals[0], dtype=int)  # (X in 3D)
+    y_vals = np.arange(0, map_h, intervals[1], dtype=int)  # (Z in 3D)
+    coors = np.stack(np.meshgrid(x_vals, y_vals), axis=2)  # (H, W, 2) --- (Z, X) in 3D
     coors = coors.reshape(-1, 2)  # (H*W, 2)
-    map_vals = top_down_map[coors[:, 0], coors[:, 1]]
+    map_vals = top_down_map[coors[:, 0], coors[:, 1]]  # [Z, X] access
     valid_coors = coors[map_vals > 0]
-
-    real_x_vals = coordinate_max - valid_coors[:, 0] * grid_size
-    real_z_vals = coordinate_min + valid_coors[:, 1] * grid_size
     start_y = env.habitat_env.sim.get_agent_state().position[1]
-
-    for j in range(real_x_vals.shape[0]):
+    for j in range(valid_coors.shape[0]):
         for theta in np.arange(-np.pi, np.pi, np.pi / 3.0):
-            position = [
-                real_x_vals[j].item(),
-                start_y.item(),
-                real_z_vals[j].item(),
-            ]
+            real_z_val, real_x_val = maps.from_grid(
+                coors[j, 0], coors[j, 1], grid_resolution, env.habitat_env.sim
+            )
+            position = [real_x_val, start_y.item(), real_z_val]
             rotation = [
                 0.0,
                 np.sin(theta / 2).item(),

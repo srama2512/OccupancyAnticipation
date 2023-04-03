@@ -30,13 +30,13 @@ from habitat_extensions.utils import observations_to_image
 from habitat_baselines.common.base_trainer import BaseRLTrainer
 from habitat_baselines.common.baseline_registry import baseline_registry
 from occant_baselines.common.env_utils import construct_envs
-from habitat_baselines.common.environments import get_env_class
+from habitat.core.environments import get_env_class
 from occant_baselines.common.rollout_storage import (
     RolloutStorageExtended,
     MapLargeRolloutStorageMP,
 )
 from habitat_baselines.common.tensorboard_utils import TensorboardWriter
-from habitat_baselines.common.utils import (
+from habitat_baselines.utils.common import (
     batch_obs,
     generate_video,
     linear_decay,

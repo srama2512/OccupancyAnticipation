@@ -22,9 +22,9 @@ from habitat import Config, logger
 from habitat_baselines.common.base_trainer import BaseRLTrainer
 from habitat_baselines.common.baseline_registry import baseline_registry
 from occant_baselines.common.env_utils import construct_envs
-from habitat_baselines.common.environments import get_env_class
+from habitat.core.environments import get_env_class
 from habitat_baselines.common.tensorboard_utils import TensorboardWriter
-from habitat_baselines.common.utils import batch_obs
+from habitat_baselines.utils.common import batch_obs
 from occant_baselines.rl.ans import ActiveNeuralSLAMNavigator
 from occant_baselines.rl.policy_utils import OccupancyAnticipationWrapper
 from occant_utils.common import add_pose

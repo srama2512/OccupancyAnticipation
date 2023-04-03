@@ -12,7 +12,7 @@ import numpy as np
 import habitat
 from habitat import Config, Env, RLEnv, VectorEnv, make_dataset
 
-from habitat_baselines.common.env_utils import make_env_fn
+from habitat.utils.env_utils import make_env_fn
 
 
 def construct_envs(
