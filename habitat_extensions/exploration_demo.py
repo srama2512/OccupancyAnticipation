@@ -45,8 +45,8 @@ def colorize_ego_map(ego_map):
               d 2nd channel represents prob(explored space)
     """
     explored_mask = ego_map[..., 1] > 0.5
-    occupied_mask = np.logical_and(ego_map[..., 0] > 0.5, explored_mask)
-    free_space_mask = np.logical_and(ego_map[..., 0] <= 0.5, explored_mask)
+    occupied_mask = (ego_map[..., 0] > 0.5) & explored_mask
+    free_space_mask = (ego_map[..., 0] <= 0.5) & explored_mask
     unexplored_mask = ego_map[..., 1] <= 0.5
 
     ego_map_color = np.zeros((*ego_map.shape[:2], 3), np.uint8)
@@ -86,7 +86,7 @@ Action space:
 
 action = 0
 count = 0
-H, W = 100, 100
+H, W = 300, 300
 while True:
     obs, reward, done, info = env.step(action)
     if done:
@@ -104,6 +104,9 @@ while True:
     vis_image_bot = np.concatenate(
         [ego_map, ego_map_anticipated, gt_global_map], axis=1
     )
+    new_W = vis_image_top.shape[1]
+    new_H = int(vis_image_top.shape[1] / vis_image_bot.shape[1] * vis_image_bot.shape[0])
+    vis_image_bot = cv2.resize(vis_image_bot, (new_W, new_H), interpolation=cv2.INTER_AREA)
     vis_image = np.concatenate([vis_image_top, vis_image_bot], axis=0)
 
     cv2.imshow("Image", np.flip(vis_image, axis=2))
