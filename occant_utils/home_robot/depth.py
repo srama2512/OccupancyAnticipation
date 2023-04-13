@@ -86,12 +86,35 @@ def transform_pose_t(XYZ, current_pose, device):
     Output:
         XYZ : ...x3
     """
-    R = ru.get_r_matrix([0.0, 0.0, 1.0], angle=current_pose[2] - np.pi / 2.0)
+    R = ru.get_r_matrix([0.0, 0.0, 1.0], angle=current_pose[2])
     XYZ = torch.matmul(
         XYZ.reshape(-1, 3), torch.from_numpy(R).float().transpose(1, 0).to(device)
     ).reshape(XYZ.shape)
     XYZ[..., 0] += current_pose[0]
     XYZ[..., 1] += current_pose[1]
+    return XYZ
+
+
+def inverse_transform_pose_t(XYZ, current_pose, device):
+    """
+    Transforms the geocentric point cloud into egocentric frame
+    Input:
+        XYZ                     : ...x3
+        current_pose            : camera position (x, y, theta (radians))
+    Output:
+        XYZ : ...x3
+    """
+    M = ru.get_m_matrix(
+        [0.0, 0.0, 1.0],
+        angle=current_pose[2],
+        translation=[current_pose[0], current_pose[1], 0.0],
+    )
+    Minv = np.linalg.inv(M)
+    XYZT = torch.cat((XYZ, torch.ones_like(XYZ[..., :1])), dim=-1)
+    XYZT = torch.matmul(
+        XYZT.reshape(-1, 4), torch.from_numpy(Minv).float().transpose(1, 0).to(device)
+    ).reshape(XYZT.shape)
+    XYZ = XYZT[..., :3] / XYZT[..., 3:]
     return XYZ
 
 

@@ -33,6 +33,14 @@ def get_r_matrix(ax_, angle):
     return R
 
 
+def get_m_matrix(ax_, angle, translation):
+    R = get_r_matrix(ax_, angle)
+    M = np.eye(4)
+    M[:3, :3] = R
+    M[:3, 3] = translation
+    return M
+
+
 def r_between(v_from_, v_to_):
     v_from = normalize(v_from_)
     v_to = normalize(v_to_)

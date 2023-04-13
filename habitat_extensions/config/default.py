@@ -56,6 +56,16 @@ _C.TASK.GT_EGO_MAP.MAP_SCALE = 0.05
 _C.TASK.GT_EGO_MAP.MAX_SENSOR_RANGE = 3.25
 _C.TASK.GT_EGO_MAP.HEIGHT_THRESH = [0.2, 1.5]
 # -----------------------------------------------------------------------------
+# GT EGO MAP SENSOR WITH HISTORY
+# -----------------------------------------------------------------------------
+_C.TASK.GT_EGO_MAP_HISTORY = CN()
+_C.TASK.GT_EGO_MAP_HISTORY.TYPE = "GTEgoMapHistory"
+_C.TASK.GT_EGO_MAP_HISTORY.MAP_SIZE = 101
+_C.TASK.GT_EGO_MAP_HISTORY.MAP_SCALE = 0.05
+_C.TASK.GT_EGO_MAP_HISTORY.MAX_SENSOR_RANGE = 3.25
+_C.TASK.GT_EGO_MAP_HISTORY.HEIGHT_THRESH = [0.2, 1.5]
+_C.TASK.GT_EGO_MAP_HISTORY.HISTORY_LIMIT = 50
+# -----------------------------------------------------------------------------
 # GT EGO WALL MAP SENSOR
 # -----------------------------------------------------------------------------
 _C.TASK.GT_EGO_WALL_MAP = CN()

@@ -192,7 +192,8 @@ class OccAntExpTrainer(BaseRLTrainer):
         self.local_actor_critic = self.ans_net.local_policy
         self.global_actor_critic = self.ans_net.global_policy
         # Create depth projection model to estimate visible occupancy
-        if 'GT_EGO_MAP' not in self.config.TASK_CONFIG.TASK.SENSORS:
+        if ('GT_EGO_MAP' not in self.config.TASK_CONFIG.TASK.SENSORS) \
+            and ('GT_EGO_MAP_HISTORY' not in self.config.TASK_CONFIG.TASK.SENSORS):
             self.depth_projection_net = DepthProjectionNet(
                 ans_cfg.OCCUPANCY_ANTICIPATOR.EGO_PROJECTION
             )
@@ -200,7 +201,8 @@ class OccAntExpTrainer(BaseRLTrainer):
         self.mapper.to(self.device)
         self.local_actor_critic.to(self.device)
         self.global_actor_critic.to(self.device)
-        if 'GT_EGO_MAP' not in self.config.TASK_CONFIG.TASK.SENSORS:
+        if ('GT_EGO_MAP' not in self.config.TASK_CONFIG.TASK.SENSORS) \
+            and ('GT_EGO_MAP_HISTORY' not in self.config.TASK_CONFIG.TASK.SENSORS):
             self.depth_projection_net.to(self.device)
         # ============================== Create agents ================================
         # Mapper agent
@@ -915,7 +917,8 @@ class OccAntExpTrainer(BaseRLTrainer):
             depth = F.interpolate(depth, (imH, imW), mode="nearest")
             batch["depth"] = rearrange(depth, "b c h w -> b h w c")
         # Compute ego_map_gt from depth
-        if 'GT_EGO_MAP' not in self.config.TASK_CONFIG.TASK.SENSORS:
+        if ('GT_EGO_MAP' not in self.config.TASK_CONFIG.TASK.SENSORS) \
+            and ('GT_EGO_MAP_HISTORY' not in self.config.TASK_CONFIG.TASK.SENSORS):
             ego_map_gt_b = self.depth_projection_net(
                 rearrange(batch["depth"], "b h w c -> b c h w")
             )

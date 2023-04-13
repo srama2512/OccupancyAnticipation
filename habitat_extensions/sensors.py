@@ -348,7 +348,7 @@ class GTEgoMap(Sensor):
             (self.agent_height + 1) / self.z_resolution - self.min_voxel_height
         )
         self.du_scale = 4
-        self.shift_loc = [self.vision_range * self.xy_resolution // 2, 0, np.pi / 2.0]
+        self.shift_loc = [self.vision_range * self.xy_resolution // 2, 0, 0.0]
         self.tilt_angle = self._sim.habitat_config.DEPTH_SENSOR.ORIENTATION[0]  # in radians
 
         # Depth processing
@@ -480,6 +480,196 @@ class GTEgoMap(Sensor):
         return output
 
     def get_observation(self, *args: Any, observations, episode, **kwargs: Any):
+        sim_depth = asnumpy(observations["depth"])  # (H, W, 1)
+        sim_rgb = asnumpy(observations["rgb"])  # (H, W, 3)
+        sim_depth = torch.from_numpy(sim_depth).squeeze(2).unsqueeze(0)  # (1, H, W)
+        sim_rgb = torch.from_numpy(sim_rgb).permute(2, 0, 1).unsqueeze(0)  # (1, 3, H, W)
+        sim_depth = sim_depth.to(self.device)
+        sim_rgb = sim_rgb.to(self.device)
+        ego_map_gt = self._get_depth_projection(sim_rgb, sim_depth)  # (1, 2, H, W)
+        ego_map_gt = asnumpy(rearrange(ego_map_gt, "() c h w -> h w c"))
+
+        return ego_map_gt
+
+
+@registry.register_sensor(name="GTEgoMapHistory")
+class GTEgoMapHistory(GTEgoMap):
+    r"""Estimates the top-down occupancy based on current depth-map and past observations.
+
+    Args:
+        sim: reference to the simulator for calculating task observations.
+        config: contains the MAP_SCALE, MAP_SIZE, HEIGHT_THRESH fields to
+                decide grid-size, extents of the projection, and the thresholds
+                for determining obstacles and explored space.
+    """
+
+    def __init__(self, sim: Simulator, config: Config, *args: Any, **kwargs: Any):
+        super().__init__(sim, config, *args, **kwargs)
+        # Maintain a history of point-cloud observations
+        self.past_observations = None
+        self._active_episode_id = None
+
+    def _get_uuid(self, *args: Any, **kwargs: Any):
+        return "ego_map_gt"
+
+    def _get_world_coords(self):
+        """
+        Conventions:
+            X is rightward positive
+            Y is forward positive
+            theta is measured counter-clockwise starting from X-axis
+        """
+        # Get agent position and rotation
+        agent_state = self._sim.get_agent_state()
+        agent_position = np.array(agent_state.position) * 100.0
+        agent_rotation = -compute_heading_from_quaternion(agent_state.rotation)
+        # convert to world coordinates
+        world_coords = [agent_position[0], -agent_position[2], agent_rotation]
+        return world_coords
+
+    def _get_depth_projection(self, rgb_map: torch.Tensor, depth_map: torch.Tensor):
+        """Generate a local map given a new observation using parameter-free
+        differentiable projective geometry.
+        Args:
+            depth_map: current frame containing depth (batch_size, frame_height, frame_width)
+        Returns:
+            local_map: current local map updated with current observation of shape
+                (batch_size, 2, map_height, map_width)
+        """
+        batch_size, h, w = depth_map.size()
+        assert batch_size == 1
+        device, dtype = depth_map.device, depth_map.dtype
+        tilt = torch.ones(batch_size).to(device) * self.tilt_angle
+
+        depth = depth_map.float()
+        if self.src_normalized_depth:
+            depth = depth * (self.src_max_depth - self.src_min_depth) + self.src_min_depth
+        else:
+            # convert to cm
+            depth = depth * 100.0
+        depth[depth > self.max_depth] = 0
+        depth[depth == self.min_depth] = 0
+        point_cloud_t = du.get_point_cloud_from_z_t(
+            depth, self.camera_matrix, device, scale=self.du_scale
+        )
+        point_cloud_base_coords = du.transform_camera_view_t(
+            point_cloud_t, self.agent_height, asnumpy(tilt * 180.0 / math.pi), device
+        )
+        # Transform to world coordinates
+        world_coords = self._get_world_coords()
+        point_cloud_world_coords = du.transform_pose_t(
+            point_cloud_base_coords, world_coords, device
+        )  # (1, H, W, 3)
+
+        point_cloud_world_coords = rearrange(
+            point_cloud_world_coords, "() h w c -> (h w) c"
+        )  # assumes batch_size = 1
+        # Remove invalid points
+        valid_points = rearrange(depth[:, ::self.du_scale, ::self.du_scale] != 0, "() h w -> (h w)")
+        point_cloud_world_coords = asnumpy(point_cloud_world_coords[valid_points])
+        # Add points to past
+        if self.past_observations is None:
+            self.past_observations = [point_cloud_world_coords]
+        else:
+            self.past_observations.append(point_cloud_world_coords)
+            if len(self.past_observations) > self.config.HISTORY_LIMIT:
+                self.past_observations = self.past_observations[-self.config.HISTORY_LIMIT:]
+        past_observations = np.concatenate(self.past_observations, axis=0)
+        point_cloud_world_coords_h = torch.from_numpy(past_observations).float()
+        point_cloud_world_coords_h = point_cloud_world_coords_h.unsqueeze(0)#.to(device)  # (1, N, 3)
+        point_cloud_base_coords_h = du.inverse_transform_pose_t( 
+            point_cloud_world_coords_h, world_coords, torch.device("cpu")#device
+        )
+
+        # Transform to map coordinates
+        point_cloud_map_coords_h = du.transform_pose_t(
+            point_cloud_base_coords_h, self.shift_loc, torch.device("cpu")#device
+        )  # (1, N, 3)
+        if False:
+            # from occant_utils.home_robot.point_cloud import show_point_cloud
+
+            rgb = rgb_map[:, :3, :: self.du_scale, :: self.du_scale].permute(0, 2, 3, 1).cpu()
+            xyz = point_cloud_map_coords_h[0].cpu().reshape(-1, 3).numpy()
+            print("-> Showing point cloud in camera coords")
+            # show_point_cloud(
+            #     (xyz / 100.0) (rgb / 255.0), orig=np.zeros(3)
+            # )
+            import matplotlib.pyplot as plt
+            import matplotlib
+            matplotlib.use("agg")
+            fig = plt.figure()
+            plt.scatter(xyz[:, 0], xyz[:, 1], c=xyz[:, 2])
+            plt.savefig("image_1.png")
+            fig = plt.figure()
+            plt.scatter(xyz[:, 0], xyz[:, 2], c=xyz[:, 1])
+            plt.savefig("image_2.png")
+            fig = plt.figure()
+            plt.imshow(rgb[0].numpy() / 255.0)
+            plt.savefig("image_3.png")
+
+        voxel_channels = 1
+
+        init_grid = torch.zeros(
+            batch_size,
+            voxel_channels,
+            self.vision_range,
+            self.vision_range,
+            self.max_voxel_height - self.min_voxel_height,
+            device=device,
+            dtype=torch.float32,
+        )
+
+        XYZ_cm_std = point_cloud_map_coords_h.float()
+        XYZ_cm_std[..., :2] = XYZ_cm_std[..., :2] / self.xy_resolution
+        XYZ_cm_std[..., :2] = (
+            (XYZ_cm_std[..., :2] - self.vision_range // 2.0) / self.vision_range * 2.0
+        )
+        XYZ_cm_std[..., 2] = XYZ_cm_std[..., 2] / self.z_resolution
+        XYZ_cm_std[..., 2] = (
+            (
+                XYZ_cm_std[..., 2]
+                - (self.max_voxel_height + self.min_voxel_height) // 2.0
+            )
+            / (self.max_voxel_height - self.min_voxel_height)
+            * 2.0
+        )  # (1, N, 3)
+        # Remove out-of-bounds points
+        valid_points = (XYZ_cm_std[0, :, 0] <= 1.0) & (XYZ_cm_std[0, :, 0] >= -1.0) & \
+            (XYZ_cm_std[0, :, 1] <= 1.0) & (XYZ_cm_std[0, :, 1] >= -1.0)  # (N, )
+        XYZ_cm_std = XYZ_cm_std[:, valid_points, :]
+        XYZ_cm_std = rearrange(XYZ_cm_std, "b n c -> b c n").to(device)
+
+        feat = torch.ones(
+            batch_size,
+            voxel_channels,
+            XYZ_cm_std.shape[2],
+            device=device,
+            dtype=torch.float32,
+        )
+
+        voxels = du.splat_feat_nd(init_grid, feat, XYZ_cm_std).transpose(2, 3)
+
+        agent_height_proj = voxels[
+            ..., self.min_mapped_height : self.max_mapped_height
+        ].sum(4)
+        # all_height_proj = voxels.sum(4)
+        all_height_proj = voxels[..., 0 : self.max_mapped_height].sum(4)
+
+        fp_map_pred = agent_height_proj[:, 0:1, :, :]
+        fp_exp_pred = all_height_proj[:, 0:1, :, :]
+        fp_map_pred = ((fp_map_pred / self.map_pred_threshold) >= 1.0).float()
+        fp_exp_pred = ((fp_exp_pred / self.exp_pred_threshold) >= 1.0).float()
+        output = torch.cat([fp_map_pred, fp_exp_pred], dim=1)  # (B, 2, H, W)
+        # Post-hoc transformations to fix coordinate system
+        output = torch.flip(output, [2])
+
+        return output
+
+    def get_observation(self, *args: Any, observations, episode, **kwargs: Any):
+        episode_id = f"{episode.scene_id}_{episode.episode_id}"
+        if episode_id != self._active_episode_id:
+            self.past_observations = None
+            self._active_episode_id = episode_id
         sim_depth = asnumpy(observations["depth"])  # (H, W, 1)
         sim_rgb = asnumpy(observations["rgb"])  # (H, W, 3)
         sim_depth = torch.from_numpy(sim_depth).squeeze(2).unsqueeze(0)  # (1, H, W)
