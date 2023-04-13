@@ -872,7 +872,7 @@ class GTEgoMapAnticipated(GTEgoMap):
         if self.config.GT_TYPE == "wall_occupancy":
             maps_info_path = self.config.ALL_MAPS_INFO_PATH
             self._all_maps_info = json.load(open(maps_info_path, "r"))
-            self.current_wall_episode_id = None
+            self.current_episode_id = None
             self._scene_maps_info = None
             self._scene_maps = None
 
@@ -885,11 +885,128 @@ class GTEgoMapAnticipated(GTEgoMap):
         )
         return top_down_map
 
+    def _get_seen_occupancy(self, episode, agent_state):
+        episode_id = (episode.episode_id, episode.scene_id)
+        # Load the episode specific maps only if the episode has changed
+        if self.current_episode_id != episode_id:
+            self.current_episode_id = episode_id
+            if self.config.GT_TYPE == "wall_occupancy":
+                scene_id = episode.scene_id.split("/")[-1]
+                self._scene_maps_info = self._all_maps_info[scene_id]
+                # Load the maps per floor
+                seen_maps, wall_maps = self._load_transformed_wall_maps(
+                    self._scene_maps_info, episode,
+                )
+                self._scene_maps = {}
+                self._scene_maps["seen_maps"] = seen_maps
+                self._scene_maps["wall_maps"] = wall_maps
+
+        agent_state = self._sim.get_agent_state()
+        current_height = agent_state.position[1]
+        best_floor_idx = None
+        best_floor_dist = math.inf
+        for floor_idx, floor_data in enumerate(self._scene_maps_info):
+            floor_height = floor_data["floor_height"]
+            if abs(current_height - floor_height) < best_floor_dist:
+                best_floor_idx = floor_idx
+                best_floor_dist = abs(current_height - floor_height)
+        assert best_floor_idx is not None
+        current_seen_map = self._scene_maps["seen_maps"][best_floor_idx]  # (H, W, 2)
+
+        # ========= Get local egocentric crop of the current wall map =========
+        # Compute relative pose of agent from start location
+        start_position = episode.start_position  # (X, Y, Z)
+        start_rotation = quaternion_xyzw_to_wxyz(episode.start_rotation)
+        start_heading = compute_heading_from_quaternion(start_rotation)
+        start_pose = torch.Tensor(
+            [[-start_position[2], start_position[0], start_heading]]
+        )
+        agent_position = agent_state.position
+        agent_heading = compute_heading_from_quaternion(agent_state.rotation)
+        agent_pose = torch.Tensor(
+            [[-agent_position[2], agent_position[0], agent_heading]]
+        )
+        rel_pose = subtract_pose(start_pose, agent_pose)[0]  # (3,)
+
+        # Compute agent position on the map image
+        map_scale = self.config.MAP_SCALE
+
+        H, W = current_seen_map.shape[:2]
+        Hby2, Wby2 = (H + 1) // 2, (W + 1) // 2
+        agent_map_x = int(rel_pose[1].item() / map_scale + Wby2)
+        agent_map_y = int(-rel_pose[0].item() / map_scale + Hby2)
+
+        # Crop the region around the agent.
+        mrange = int(1.5 * self.map_size)
+
+        # Add extra padding if map range is coordinates go out of bounds
+        y_start = agent_map_y - mrange
+        y_end = agent_map_y + mrange
+        x_start = agent_map_x - mrange
+        x_end = agent_map_x + mrange
+
+        x_l_pad, y_l_pad, x_r_pad, y_r_pad = 0, 0, 0, 0
+
+        H, W = current_seen_map.shape[:2]
+        if x_start < 0:
+            x_l_pad = int(-x_start)
+            x_start += x_l_pad
+            x_end += x_l_pad
+        if x_end >= W:
+            x_r_pad = int(x_end - W + 1)
+        if y_start < 0:
+            y_l_pad = int(-y_start)
+            y_start += y_l_pad
+            y_end += y_l_pad
+        if y_end >= H:
+            y_r_pad = int(y_end - H + 1)
+
+        ego_map = np.pad(
+            current_seen_map,
+            ((y_l_pad, y_r_pad), (x_l_pad, x_r_pad), (0, 0))
+        )
+        ego_map = ego_map[y_start : (y_end + 1), x_start : (x_end + 1)]
+
+        agent_heading = rel_pose[2].item()
+        agent_heading = math.degrees(agent_heading)
+
+        half_size = ego_map.shape[0] // 2
+        center = (half_size, half_size)
+        M = cv2.getRotationMatrix2D(center, agent_heading, scale=1.0)
+
+        ego_map = cv2.warpAffine(
+            ego_map,
+            M,
+            (ego_map.shape[1], ego_map.shape[0]),
+            flags=cv2.INTER_NEAREST,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(1,),
+        )
+
+        ego_map = ego_map.astype(np.float32)
+        mrange = int(self.map_size)
+        ego_map = ego_map[
+            (half_size - mrange) : (half_size + mrange),
+            (half_size - mrange) : (half_size + mrange),
+        ]
+
+        # Get forward region infront of the agent
+        half_size = ego_map.shape[0] // 2
+        quarter_size = ego_map.shape[0] // 4
+        center = (half_size, half_size)
+
+        ego_map = ego_map[0:half_size, quarter_size : (quarter_size + half_size)]
+
+        # Dilate the obstacle map
+        dilation_mask = np.ones((5, 5))
+        ego_map[:, :, 0] = cv2.dilate(ego_map[:, :, 0], dilation_mask, iterations=1)
+        return ego_map
+
     def _get_wall_occupancy(self, episode, agent_state):
         episode_id = (episode.episode_id, episode.scene_id)
         # Load the episode specific maps only if the episode has changed
-        if self.current_wall_episode_id != episode_id:
-            self.current_wall_episode_id = episode_id
+        if self.current_episode_id != episode_id:
+            self.current_episode_id = episode_id
             if self.config.GT_TYPE == "wall_occupancy":
                 scene_id = episode.scene_id.split("/")[-1]
                 self._scene_maps_info = self._all_maps_info[scene_id]
@@ -1154,7 +1271,7 @@ class GTEgoMapAnticipated(GTEgoMap):
             sim_rgb = torch.from_numpy(sim_rgb).permute(2, 0, 1).unsqueeze(0)  # (1, 3, H, W)
             sim_depth = sim_depth.to(self.device)
             sim_rgb = sim_rgb.to(self.device)
-            full_occupancy = self._get_mesh_occupancy(episode, agent_state,)
+            full_occupancy = self._get_seen_occupancy(episode, agent_state,)
             wall_occupancy = self._get_wall_occupancy(episode, agent_state,)
 
             # Invalid points are zeros
@@ -1173,11 +1290,6 @@ class GTEgoMapAnticipated(GTEgoMap):
                 self.config.WALL_FOV,
                 max_line_len=100.0,
             ).T
-
-            # Add the GT ego map to this
-            ego_map_gt = self._get_depth_projection(sim_rgb, sim_depth)
-            ego_map_gt = asnumpy(rearrange(ego_map_gt, "() c h w -> h w c"))
-            current_mask = np.maximum(current_mask, ego_map_gt[..., 1])
 
             dilation_mask = np.ones((5, 5))
 
