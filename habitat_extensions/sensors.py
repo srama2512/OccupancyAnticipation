@@ -12,15 +12,18 @@ import torch
 import numpy as np
 from gym import spaces
 
+import habitat_sim
 from habitat.config import Config
 from habitat.core.registry import registry
 from habitat.core.simulator import (
     AgentState,
+    DepthSensor,
     Sensor,
     SensorTypes,
     Simulator,
 )
 from habitat.core.utils import try_cv2_import
+from habitat.sims.habitat_simulator.habitat_simulator import check_sim_obs
 from habitat.tasks.utils import cartesian_to_polar
 from habitat_extensions.geometry_utils import (
     compute_updated_pose,
@@ -308,6 +311,138 @@ class NoiseFreePoseSensor(Sensor):
         return np.array(
             [-agent_position[2], agent_position[0], agent_heading], dtype=np.float32,
         )
+
+
+@registry.register_sensor(name="NoisyDepthSensor")
+class NoisyDepthSensor(DepthSensor):
+    r"""
+    Args:
+        sim: reference to the simulator for calculating task observations.
+        config: Contains the noise type parameters.
+    """
+    min_depth_value: float
+    max_depth_value: float
+
+    def __init__(self, config: Config):
+        self.sim_sensor_type = habitat_sim.SensorType.DEPTH
+        if config.NORMALIZE_DEPTH:
+            self.min_depth_value = 0
+            self.max_depth_value = 1
+        else:
+            self.min_depth_value = config.MIN_DEPTH
+            self.max_depth_value = config.MAX_DEPTH
+
+        super().__init__(config=config)
+
+    def _get_observation_space(self, *args: Any, **kwargs: Any):
+        return spaces.Box(
+            low=self.min_depth_value,
+            high=self.max_depth_value,
+            shape=(self.config.HEIGHT, self.config.WIDTH, 1),
+            dtype=np.float32,
+        )
+
+    def get_observation(self, sim_obs):
+        obs = sim_obs.get(self.uuid, None)
+        check_sim_obs(obs, self)
+
+        obs = self.add_multiplicative_noise(
+            obs,
+            self.config.MULT_NOISE.SHAPE,
+            self.config.MULT_NOISE.SCALE,
+        )
+        obs = self.dropout_random_ellipses(
+            obs,
+            self.config.DROP_NOISE.MEAN,
+            self.config.DROP_NOISE.SHAPE,
+            self.config.DROP_NOISE.SCALE,
+        )
+        if isinstance(obs, np.ndarray):
+            obs = np.clip(obs, self.config.MIN_DEPTH, self.config.MAX_DEPTH)
+
+            obs = np.expand_dims(
+                obs, axis=2
+            )  # make depth observation a 3D array
+        else:
+            obs = obs.clamp(self.config.MIN_DEPTH, self.config.MAX_DEPTH)
+
+            obs = obs.unsqueeze(-1)
+
+        if self.config.NORMALIZE_DEPTH:
+            # normalize depth observation to [0, 1]
+            obs = (obs - self.config.MIN_DEPTH) / (
+                self.config.MAX_DEPTH - self.config.MIN_DEPTH
+            )
+
+        return obs
+
+    def add_multiplicative_noise(self, depth_img, gamma_shape=10000, gamma_scale=0.0001):
+        """Add noise to depth image.
+        This is adapted from the DexNet 2.0 code.
+        Their code: https://github.com/BerkeleyAutomation/gqcnn/blob/75040b552f6f7fb264c27d427b404756729b5e88/gqcnn/sgd_optimizer.py
+        @param depth_img: a [H x W] set of depth z values
+        """
+        # Multiplicative noise: Gamma random variable
+        # This will randomly shift around points locally
+        multiplicative_noise = np.random.gamma(
+            gamma_shape, gamma_scale, size=depth_img.shape
+        )
+        # Apply this noise to the depth image
+        depth_img = multiplicative_noise * depth_img
+        return depth_img
+
+    def dropout_random_ellipses(
+        self, depth_img, dropout_mean, gamma_shape=10000, gamma_scale=0.0001
+    ):
+        """Randomly drop a few ellipses in the image for robustness.
+        This is adapted from the DexNet 2.0 code.
+        Their code: https://github.com/BerkeleyAutomation/gqcnn/blob/75040b552f6f7fb264c27d427b404756729b5e88/gqcnn/sgd_optimizer.py
+        @param depth_img: a [H x W] set of depth z values
+        """
+        depth_img = depth_img.copy()
+
+        # Sample number of ellipses to dropout
+        num_ellipses_to_dropout = np.random.poisson(dropout_mean)
+
+        # Sample ellipse centers
+        nonzero_pixel_indices = np.array(
+            np.where(depth_img > 0)
+        ).T  # Shape: [#nonzero_pixels x 2]
+        dropout_centers_indices = np.random.choice(
+            nonzero_pixel_indices.shape[0], size=num_ellipses_to_dropout
+        )
+        dropout_centers = nonzero_pixel_indices[
+            dropout_centers_indices, :
+        ]  # Shape: [num_ellipses_to_dropout x 2]
+
+        # Sample ellipse radii and angles
+        x_radii = np.random.gamma(gamma_shape, gamma_scale, size=num_ellipses_to_dropout)
+        y_radii = np.random.gamma(gamma_shape, gamma_scale, size=num_ellipses_to_dropout)
+        angles = np.random.randint(0, 360, size=num_ellipses_to_dropout)
+
+        # Dropout ellipses
+        for i in range(num_ellipses_to_dropout):
+            center = dropout_centers[i, :]
+            x_radius = np.round(x_radii[i]).astype(int)
+            y_radius = np.round(y_radii[i]).astype(int)
+            angle = angles[i]
+
+            # dropout the ellipse
+            # mask is always 2d even if input is not
+            mask = np.zeros(depth_img.shape[:2])
+            mask = cv2.ellipse(
+                mask,
+                tuple(center[::-1]),
+                (x_radius, y_radius),
+                angle=angle,
+                startAngle=0,
+                endAngle=360,
+                color=1,
+                thickness=-1,
+            )
+            depth_img[mask == 1] = 0
+
+        return depth_img
 
 
 @registry.register_sensor(name="GTEgoMap")
