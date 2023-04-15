@@ -10,6 +10,7 @@ import math
 import copy
 import random
 import numpy as np
+import kornia
 
 import torch
 import torch.nn as nn
@@ -86,6 +87,9 @@ class ActiveNeuralSLAMBase(ABC):
             maps[:, 1] > self.config.thresh_explored
         )
         final_maps = obstacle_mask.float()  # (bs, M, M)
+        # Dilate final maps
+        kernel = torch.ones((5, 5)).float().to(maps.device)
+        final_maps = kornia.morphology.dilation(final_maps.unsqueeze(1), kernel).squeeze(1)
         # Post-process map based on previously visited locations
         final_maps[self.states["visited_map"] == 1] = 0
         # Post-process map based on previously collided regions
