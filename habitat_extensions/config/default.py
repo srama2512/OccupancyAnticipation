@@ -114,6 +114,9 @@ _C.TASK.GT_EGO_MAP_ANTICIPATED.ALL_MAPS_INFO_PATH = (
 _C.TASK.GT_EGO_MAP_ANTICIPATED.WALL_FOV = 180.0
 # for anticipated_occupancy option
 _C.TASK.GT_EGO_MAP_ANTICIPATED.NUM_TOPDOWN_MAP_SAMPLE_POINTS = 20000
+# mask nearby pixels in the map
+_C.TASK.GT_EGO_MAP_ANTICIPATED.MASK_CLOSE_PIXELS = False
+_C.TASK.GT_EGO_MAP_ANTICIPATED.MASK_CLOSE_PERC = 25
 # -----------------------------------------------------------------------------
 # COLLISION SENSOR
 # -----------------------------------------------------------------------------

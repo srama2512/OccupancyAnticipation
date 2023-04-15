@@ -865,6 +865,7 @@ class GTEgoMapAnticipated(GTEgoMap):
         self._num_samples = config.NUM_TOPDOWN_MAP_SAMPLE_POINTS
         self._coordinate_min = maps.COORDINATE_MIN
         self._coordinate_max = maps.COORDINATE_MAX
+        self._mask_close = config.MASK_CLOSE_PIXELS
         resolution = (self._coordinate_max - self._coordinate_min) / self.map_scale
         self._map_resolution = (int(resolution), int(resolution))
         self.current_episode_id = None
@@ -1293,6 +1294,15 @@ class GTEgoMapAnticipated(GTEgoMap):
                 self.config.WALL_FOV,
                 max_line_len=100.0,
             ).T
+
+            if self._mask_close:
+                npixs = int(current_mask.shape[0] * self.config.MASK_CLOSE_PERC / 100.0)
+                current_mask[-npixs :, :] = 0.0
+
+            # Add the GT ego map to this
+            ego_map_gt = self._get_depth_projection(sim_rgb, sim_depth)
+            ego_map_gt = asnumpy(rearrange(ego_map_gt, "() c h w -> h w c"))
+            current_mask = np.maximum(current_mask, ego_map_gt[..., 1])
 
             dilation_mask = np.ones((5, 5))
 
