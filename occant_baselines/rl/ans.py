@@ -737,7 +737,7 @@ class ActiveNeuralSLAMExplorer(ActiveNeuralSLAMBase):
             rewards,
         )
 
-    def _has_reached_goal(agent_position, goal_position):
+    def _has_reached_goal(self, agent_position, goal_position):
         if agent_position is None or goal_position is None:
             return False
         if np.linalg.norm(agent_position - goal_position) < self.goal_success_radius:

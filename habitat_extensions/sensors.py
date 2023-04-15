@@ -408,6 +408,9 @@ class NoisyDepthSensor(DepthSensor):
         nonzero_pixel_indices = np.array(
             np.where(depth_img > 0)
         ).T  # Shape: [#nonzero_pixels x 2]
+        if len(nonzero_pixel_indices) == 0:
+            return depth_img
+
         dropout_centers_indices = np.random.choice(
             nonzero_pixel_indices.shape[0], size=num_ellipses_to_dropout
         )
