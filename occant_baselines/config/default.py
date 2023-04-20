@@ -133,6 +133,7 @@ _C.RL.ANS.MAPPER.gpu_ids = []  # Set the GPUs for data parallel if necessary
 _C.RL.ANS.MAPPER.num_update_batches = 50
 _C.RL.ANS.MAPPER.replay_size = 100000
 _C.RL.ANS.MAPPER.map_batch_size = 400
+_C.RL.ANS.MAPPER.loss_type = "simple"
 # Image normalization
 _C.RL.ANS.MAPPER.NORMALIZATION = CN()
 _C.RL.ANS.MAPPER.NORMALIZATION.img_mean = [0.485, 0.456, 0.406]

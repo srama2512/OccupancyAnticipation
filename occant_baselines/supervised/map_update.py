@@ -11,13 +11,11 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import torch.multiprocessing as mp
+import torchvision
 
 from occant_utils.common import (
-    flatten_two,
-    unflatten_two,
     subtract_pose,
-    process_image,
-    transpose_image,
+    focal_loss,
 )
 from occant_baselines.rl.policy import MapperDataParallelWrapper
 
@@ -31,6 +29,20 @@ def simple_mapping_loss_fn(pt_hat, pt_gt):
     explored_gt = pt_gt[:, 1]  # (T*N, V, V)
 
     occupied_mapping_loss = F.binary_cross_entropy(occupied_hat, occupied_gt)
+    explored_mapping_loss = F.binary_cross_entropy(explored_hat, explored_gt)
+
+    mapping_loss = explored_mapping_loss + occupied_mapping_loss
+
+    return mapping_loss
+
+
+def focal_mapping_loss_fn(pt_hat, pt_gt):
+    occupied_hat = pt_hat[:, 0]  # (T*N, V, V)
+    explored_hat = pt_hat[:, 1]  # (T*N, V, V)
+    occupied_gt = pt_gt[:, 0]  # (T*N, V, V)
+    explored_gt = pt_gt[:, 1]  # (T*N, V, V)
+
+    occupied_mapping_loss = focal_loss(occupied_hat, occupied_gt, alpha=-1.0, gamma=2.0)
     explored_mapping_loss = F.binary_cross_entropy(explored_hat, explored_gt)
 
     mapping_loss = explored_mapping_loss + occupied_mapping_loss
@@ -58,6 +70,7 @@ class MapUpdateBase(nn.Module):
         occupancy_anticipator_type="anm_rgb_model",
         freeze_projection_unit=False,
         bias_factor=10.0,
+        loss_type="simple",
     ):
         super().__init__()
 
@@ -77,6 +90,7 @@ class MapUpdateBase(nn.Module):
         self.occupancy_anticipator_type = occupancy_anticipator_type
         self.bias_factor = bias_factor
         self.label_id = label_id
+        self.loss_type = loss_type
 
     def forward(self, *x):
         raise NotImplementedError
@@ -129,6 +143,14 @@ def map_update_fn(ps_args):
     pose_loss_coef = ps_args[8]
     max_grad_norm = ps_args[9]
     label_id = ps_args[10]
+    loss_type = ps_args[11]
+
+    if loss_type == "simple":
+        mapping_loss_fn = simple_mapping_loss_fn
+    elif loss_type == "focal": 
+        mapping_loss_fn = focal_mapping_loss_fn
+    else:
+        raise ValueError("Unknown loss_type: {}".format(loss_type))
 
     # Perform update
     losses = {
@@ -176,7 +198,7 @@ def map_update_fn(ps_args):
 
         # Compute losses
         # -------- mapping loss ---------
-        mapping_loss = simple_mapping_loss_fn(pt_hat, pt_gt)
+        mapping_loss = mapping_loss_fn(pt_hat, pt_gt)
         if freeze_projection_unit:
             mapping_loss = mapping_loss.detach()
 
@@ -184,7 +206,7 @@ def map_update_fn(ps_args):
             ego_map_gt = observations["ego_map_gt_at_t"]  # (bs, V, V, 2)
             ego_map_gt = rearrange(ego_map_gt, "b h w c -> b c h w")
             ego_map_hat = mapper_outputs["all_pu_outputs"]["depth_proj_estimate"]
-            mapping_loss = mapping_loss + simple_mapping_loss_fn(
+            mapping_loss = mapping_loss + mapping_loss_fn(
                 ego_map_hat, ego_map_gt
             )
 
@@ -252,6 +274,7 @@ def map_update_worker(
     pose_loss_coef = ps_args[8]
     max_grad_norm = ps_args[9]
     label_id = ps_args[10]
+    loss_type = ps_args[11]
 
     # Close parent remote
     parent_remote.close()
@@ -292,6 +315,7 @@ class MapUpdate(MapUpdateBase):
         num_update_batches=1,
         batch_size=32,
         mapper_rollouts=None,
+        loss_type="simple",
     ):
 
         super().__init__(
@@ -303,6 +327,7 @@ class MapUpdate(MapUpdateBase):
             pose_loss_coef=pose_loss_coef,
             occupancy_anticipator_type=occupancy_anticipator_type,
             freeze_projection_unit=freeze_projection_unit,
+            loss_type=loss_type,
         )
 
         self.num_update_batches = num_update_batches
@@ -354,6 +379,7 @@ class MapUpdate(MapUpdateBase):
             self.pose_loss_coef,
             self.max_grad_norm,
             self.label_id,
+            self.loss_type,
         )
 
         ps = self.mp_ctx.Process(

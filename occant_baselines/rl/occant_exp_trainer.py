@@ -218,6 +218,7 @@ class OccAntExpTrainer(BaseRLTrainer):
             num_update_batches=mapper_cfg.num_update_batches,
             batch_size=mapper_cfg.map_batch_size,
             mapper_rollouts=self.mapper_rollouts,
+            loss_type=mapper_cfg.loss_type,
         )
         # Local policy
         if ans_cfg.LOCAL_POLICY.use_heuristic_policy:
